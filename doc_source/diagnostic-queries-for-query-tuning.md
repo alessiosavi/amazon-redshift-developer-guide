@@ -16,29 +16,38 @@ The following query identifies the top 50 most time\-consuming statements that h
 
 This query also provides a count of the alert events associated with each query identified\. These alerts provide details that you can use to improve the query’s performance\. For more information, see [Reviewing query alerts](c-reviewing-query-alerts.md)\.
 
-```
-select trim(database) as db, count(query) as n_qry, 
-max(substring (qrytext,1,80)) as qrytext, 
-min(run_minutes) as "min" , 
-max(run_minutes) as "max", 
-avg(run_minutes) as "avg", sum(run_minutes) as total,  
-max(query) as max_query_id, 
-max(starttime)::date as last_run, 
-sum(alerts) as alerts, aborted
-from (select userid, label, stl_query.query, 
-trim(database) as database, 
-trim(querytxt) as qrytext, 
-md5(trim(querytxt)) as qry_md5, 
-starttime, endtime, 
-(datediff(seconds, starttime,endtime)::numeric(12,2))/60 as run_minutes,     
-alrt.num_events as alerts, aborted 
-from stl_query 
-left outer join 
-(select query, 1 as num_events from stl_alert_event_log group by query ) as alrt 
-on alrt.query = stl_query.query
-where userid <> 1 and starttime >=  dateadd(day, -7, current_date)) 
+```sql
+select trim(database)                 as db,
+       count(query)                   as n_qry,
+       max(substring(qrytext, 1, 80)) as qrytext,
+       min(run_minutes)               as "min",
+       max(run_minutes)               as "max",
+       avg(run_minutes)               as "avg",
+       sum(run_minutes)               as total,
+       max(query)                     as max_query_id,
+       max(starttime)::date           as last_run,
+       sum(alerts)                    as alerts,
+       aborted
+from (select userid,
+             label,
+             stl_query.query,
+             trim(database)                                               as database,
+             trim(querytxt)                                               as qrytext,
+             md5(trim(querytxt))                                          as qry_md5,
+             starttime,
+             endtime,
+             (datediff(seconds, starttime, endtime)::numeric(12, 2)) / 60 as run_minutes,
+             alrt.num_events                                              as alerts,
+             aborted
+      from stl_query
+               left outer join
+               (select query, 1 as num_events from stl_alert_event_log group by query) as alrt
+               on alrt.query = stl_query.query
+      where userid <> 1
+        and starttime >= dateadd(day, -7, current_date))
 group by database, label, qry_md5, aborted
-order by total desc limit 50;
+order by total desc
+limit 50;
 ```
 
 ## Identifying tables with data skew or unsorted rows<a name="identify-tables-with-data-skew-or-unsorted-rows"></a>
@@ -51,39 +60,51 @@ If a table has a `pct_unsorted` value greater than 20 percent, consider running 
 
 Also review the `mbytes` and `pct_of_total` values for each table\. These columns identify the size of the table and what percentage of raw disk space the table consumes\. The raw disk space includes space that is reserved by Amazon Redshift for internal use, so it is larger than the nominal disk capacity, which is the amount of disk space available to the user\. Use this information to verify that you have free disk space equal to at least 2\.5 times the size of your largest table\. Having this space available enables the system to write intermediate results to disk when processing complex queries\. 
 
-```
-select trim(pgn.nspname) as schema, 
-trim(a.name) as table, id as tableid, 
-decode(pgc.reldiststyle,0, 'even',1,det.distkey ,8,'all') as distkey, dist_ratio.ratio::decimal(10,4) as skew, 
-det.head_sort as "sortkey", 
-det.n_sortkeys as "#sks", b.mbytes,  
-decode(b.mbytes,0,0,((b.mbytes/part.total::decimal)*100)::decimal(5,2)) as pct_of_total, 
-decode(det.max_enc,0,'n','y') as enc, a.rows, 
-decode( det.n_sortkeys, 0, null, a.unsorted_rows ) as unsorted_rows , 
-decode( det.n_sortkeys, 0, null, decode( a.rows,0,0, (a.unsorted_rows::decimal(32)/a.rows)*100) )::decimal(5,2) as pct_unsorted 
-from (select db_id, id, name, sum(rows) as rows, 
-sum(rows)-sum(sorted_rows) as unsorted_rows 
-from stv_tbl_perm a 
-group by db_id, id, name) as a 
-join pg_class as pgc on pgc.oid = a.id
-join pg_namespace as pgn on pgn.oid = pgc.relnamespace
-left outer join (select tbl, count(*) as mbytes 
-from stv_blocklist group by tbl) b on a.id=b.tbl
-inner join (select attrelid, 
-min(case attisdistkey when 't' then attname else null end) as "distkey",
-min(case attsortkeyord when 1 then attname  else null end ) as head_sort , 
-max(attsortkeyord) as n_sortkeys, 
-max(attencodingtype) as max_enc 
-from pg_attribute group by 1) as det 
-on det.attrelid = a.id
-inner join ( select tbl, max(mbytes)::decimal(32)/min(mbytes) as ratio 
-from (select tbl, trim(name) as name, slice, count(*) as mbytes
-from svv_diskusage group by tbl, name, slice ) 
-group by tbl, name ) as dist_ratio on a.id = dist_ratio.tbl
-join ( select sum(capacity) as  total
-from stv_partitions where part_begin=0 ) as part on 1=1
-where mbytes is not null 
-order by  mbytes desc;
+```sql
+select trim(pgn.nspname)                                                                          as schema,
+       trim(a.name)                                                                               as table,
+       id                                                                                         as tableid,
+       decode(pgc.reldiststyle, 0, 'even', 1, det.distkey, 8, 'all')                              as distkey,
+       dist_ratio.ratio::decimal(10, 4)                                                           as skew,
+       det.head_sort                                                                              as "sortkey",
+       det.n_sortkeys                                                                             as "#sks",
+       b.mbytes,
+       decode(b.mbytes, 0, 0, ((b.mbytes / part.total::decimal) * 100)::decimal(5, 2))            as pct_of_total,
+       decode(det.max_enc, 0, 'n', 'y')                                                           as enc,
+       a.rows,
+       decode(det.n_sortkeys, 0, null, a.unsorted_rows)                                           as unsorted_rows,
+       decode(det.n_sortkeys, 0, null,
+              decode(a.rows, 0, 0, (a.unsorted_rows::decimal(32) / a.rows) * 100))::decimal(5, 2) as pct_unsorted
+from (select db_id,
+             id,
+             name,
+             sum(rows)                    as rows,
+             sum(rows) - sum(sorted_rows) as unsorted_rows
+      from stv_tbl_perm a
+      group by db_id, id, name) as a
+         join pg_class as pgc on pgc.oid = a.id
+         join pg_namespace as pgn on pgn.oid = pgc.relnamespace
+         left outer join (select tbl, count(*) as mbytes
+                          from stv_blocklist
+                          group by tbl) b on a.id = b.tbl
+         inner join (select attrelid,
+                            min(decode(attisdistkey, 't', attname, null)) as "distkey",
+                            min(decode(attsortkeyord, 1, attname, null))  as head_sort,
+                            max(attsortkeyord)                            as n_sortkeys,
+                            max(attencodingtype)                          as max_enc
+                     from pg_attribute
+                     group by 1) as det
+                    on det.attrelid = a.id
+         inner join (select tbl, max(mbytes)::decimal(32) / min(mbytes) as ratio
+                     from (select tbl, trim(name) as name, slice, count(*) as mbytes
+                           from svv_diskusage
+                           group by tbl, name, slice)
+                     group by tbl, name) as dist_ratio on a.id = dist_ratio.tbl
+         join (select sum(capacity) as total
+               from stv_partitions
+               where part_begin = 0) as part on 1 = 1
+where mbytes is not null
+order by mbytes desc;
 ```
 
 ## Identifying queries with nested loops<a name="identify-queries-with-nested-loops"></a>
